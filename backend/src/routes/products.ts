@@ -4,6 +4,122 @@ import { HttpError } from "../errors.js";
 
 const router = Router();
 
+type VariantInput = {
+  sku: string;
+  name: string;
+  price_cents: number;
+  inventory_count: number;
+};
+
+type ProductInput = {
+  name: string;
+  description: string | null;
+  category_id: unknown;
+  status: unknown;
+  variants: VariantInput[];
+};
+
+function requireNonEmptyString(value: unknown, fieldName: string) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new HttpError(400, `${fieldName} is required`);
+  }
+
+  return value.trim();
+}
+
+function requireNonNegativeNumber(value: unknown, fieldName: string) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new HttpError(400, `${fieldName} must be a non-negative number`);
+  }
+
+  return value;
+}
+
+function readProductWithVariants(id: number) {
+  const product = db
+    .prepare(
+      `SELECT p.*, c.name AS category_name
+       FROM products p
+       LEFT JOIN categories c ON p.category_id = c.id
+       WHERE p.id = ?`
+    )
+    .get(id) as Record<string, unknown> | undefined;
+
+  if (!product) {
+    return undefined;
+  }
+
+  const variants = db
+    .prepare(
+      `SELECT * FROM variants WHERE product_id = ? ORDER BY created_at ASC`
+    )
+    .all(id);
+
+  return { ...product, variants };
+}
+
+function validateVariants(value: unknown) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new HttpError(400, "At least one variant is required");
+  }
+
+  const skus = new Set<string>();
+
+  return value.map((variant) => {
+    if (typeof variant !== "object" || variant === null || Array.isArray(variant)) {
+      throw new HttpError(400, "Variant must be an object");
+    }
+
+    const variantData = variant as Record<string, unknown>;
+    const sku = requireNonEmptyString(variantData.sku, "Variant SKU");
+
+    if (skus.has(sku)) {
+      throw new HttpError(400, "Variant SKU must be unique");
+    }
+    skus.add(sku);
+
+    const existingSku = db
+      .prepare("SELECT id FROM variants WHERE sku = ?")
+      .get(sku);
+
+    if (existingSku) {
+      throw new HttpError(400, "Variant SKU must be unique");
+    }
+
+    return {
+      sku,
+      name: requireNonEmptyString(variantData.name, "Variant name"),
+      price_cents: requireNonNegativeNumber(
+        variantData.price_cents,
+        "Variant price_cents"
+      ),
+      inventory_count: requireNonNegativeNumber(
+        variantData.inventory_count,
+        "Variant inventory_count"
+      ),
+    };
+  });
+}
+
+function validateProductBody(body: unknown): ProductInput {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new HttpError(400, "Product request body is required");
+  }
+
+  const productData = body as Record<string, unknown>;
+
+  return {
+    name: requireNonEmptyString(productData.name, "Product name"),
+    description:
+      typeof productData.description === "string"
+        ? productData.description
+        : null,
+    category_id: productData.category_id ?? null,
+    status: productData.status ?? "active",
+    variants: validateVariants(productData.variants),
+  };
+}
+
 /**
  * GET /api/products
  * List all products with category name, variant count, and price/inventory aggregates.
@@ -60,26 +176,13 @@ router.get("/", (req, res) => {
  * Get a single product with its variants.
  */
 router.get("/:id", (req, res) => {
-  const product = db
-    .prepare(
-      `SELECT p.*, c.name AS category_name
-       FROM products p
-       LEFT JOIN categories c ON p.category_id = c.id
-       WHERE p.id = ?`
-    )
-    .get(Number(req.params.id)) as Record<string, unknown> | undefined;
+  const product = readProductWithVariants(Number(req.params.id));
 
   if (!product) {
     throw new HttpError(404, "Product not found");
   }
 
-  const variants = db
-    .prepare(
-      `SELECT * FROM variants WHERE product_id = ? ORDER BY created_at ASC`
-    )
-    .all(Number(req.params.id));
-
-  res.json({ ...product, variants });
+  res.json(product);
 });
 
 /**
@@ -97,13 +200,43 @@ router.get("/:id", (req, res) => {
  *   ]
  * }
  */
-router.post("/", (_req, res) => {
-  // TODO: Implement product creation
-  // 1. Validate required fields (name is required, variants array must have at least one entry)
-  // 2. Validate each variant (sku required + unique, price_cents >= 0, inventory_count >= 0)
-  // 3. Insert product and variants inside a transaction
-  // 4. Return the created product with its variants
-  res.status(501).json({ error: "Not implemented" });
+router.post("/", (req, res) => {
+  const productInput = validateProductBody(req.body);
+
+  const createProduct = db.transaction((input: ProductInput) => {
+    const result = db
+      .prepare(
+        `INSERT INTO products (name, description, category_id, status)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(input.name, input.description, input.category_id, input.status);
+
+    const productId = Number(result.lastInsertRowid);
+    const insertVariant = db.prepare(
+      `INSERT INTO variants (product_id, sku, name, price_cents, inventory_count)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+
+    for (const variant of input.variants) {
+      insertVariant.run(
+        productId,
+        variant.sku,
+        variant.name,
+        variant.price_cents,
+        variant.inventory_count
+      );
+    }
+
+    const product = readProductWithVariants(productId);
+
+    if (!product) {
+      throw new Error("Created product could not be read");
+    }
+
+    return product;
+  });
+
+  res.status(201).json(createProduct(productInput));
 });
 
 /**
