@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Search, X } from "lucide-react";
+import { AlertCircle, Loader2, Plus, Search, X } from "lucide-react";
 import { fetchProducts, fetchCategories } from "@/lib/api";
 import type { Product, Category } from "@/types";
 import ProductCard from "@/components/ProductCard";
@@ -10,6 +10,8 @@ export default function ProductsPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<number | undefined>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const hasFilters = Boolean(search || categoryId);
 
@@ -23,10 +25,41 @@ export default function ProductsPage() {
 
   // Fetch products when filters change
   useEffect(() => {
+    let cancelled = false;
+
+    setLoading(true);
+    setError(null);
+
     fetchProducts({ search: search || undefined, category_id: categoryId })
-      .then((r) => r.json())
-      .then(setProducts)
-      .catch(() => {});
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Unable to load products");
+        }
+
+        return (await response.json()) as Product[];
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setProducts(data);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setProducts([]);
+          setError(
+            err instanceof Error ? err.message : "Unable to load products"
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [search, categoryId]);
 
   const clearFilters = () => {
@@ -94,13 +127,23 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      {/* Result count */}
-      <p className="mb-4 text-sm text-muted-foreground">
-        {products.length} result{products.length !== 1 ? "s" : ""} found
-      </p>
+      {!loading && !error && (
+        <p className="mb-4 text-sm text-muted-foreground">
+          {products.length} result{products.length !== 1 ? "s" : ""} found
+        </p>
+      )}
 
-      {/* Product grid — 5 columns on xl like original CatalogGrid */}
-      {products.length === 0 ? (
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        </div>
+      ) : error ? (
+        <div className="flex flex-col items-center justify-center py-20 text-center text-muted-foreground">
+          <AlertCircle className="mb-3 h-8 w-8 text-destructive" />
+          <p className="text-lg font-medium text-foreground">{error}</p>
+          <p className="mt-1 text-sm">Please try again in a moment.</p>
+        </div>
+      ) : products.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
           <p className="text-lg font-medium">No products found</p>
           <p className="mt-1 text-sm">Try adjusting your search or filters.</p>
