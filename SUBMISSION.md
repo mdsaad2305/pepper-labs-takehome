@@ -1,8 +1,8 @@
 # Submission
 
-**Candidate name:** _Your name_
-**Date:** _Date_
-**Time spent:** _Approximate hours_
+**Candidate name:** Mohammed Saad Vuppukar
+**Date:** September 4, 2026
+**Time spent:** 3hrs 45mins
 
 ---
 
