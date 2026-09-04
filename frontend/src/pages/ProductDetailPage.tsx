@@ -1,14 +1,35 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { ArrowLeft, Pencil, Trash2, Package } from "lucide-react";
+import { VariantEditModal } from "@/components/VariantEditModal";
 import { fetchProduct, deleteProduct } from "@/lib/api";
 import type { ProductDetail, Variant } from "@/types";
 import { formatPrice, cn } from "@/lib/utils";
+
+function readJson(response: Response) {
+  return response.json().catch(() => null) as Promise<unknown>;
+}
+
+function parseError(responseBody: unknown, fallback: string) {
+  if (
+    typeof responseBody === "object" &&
+    responseBody !== null &&
+    "error" in responseBody &&
+    typeof responseBody.error === "string"
+  ) {
+    return responseBody.error;
+  }
+
+  return fallback;
+}
 
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [product, setProduct] = useState<ProductDetail | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [editingVariant, setEditingVariant] = useState<Variant | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -18,15 +39,42 @@ export default function ProductDetailPage() {
       .catch(console.error);
   }, [id]);
 
-  // Delete handler — sends soft-delete request.
-  // FIXME: The button does not disable while the request is in flight,
-  //        so rapid clicks can send multiple DELETE requests.
   const handleDelete = async () => {
-    if (!id) return;
+    if (!id || deleting) return;
     if (!window.confirm("Are you sure you want to delete this product?"))
       return;
-    await deleteProduct(Number(id));
-    navigate("/products");
+
+    setDeleting(true);
+    setDeleteError(null);
+
+    try {
+      const response = await deleteProduct(Number(id));
+      const responseBody = await readJson(response);
+
+      if (!response.ok) {
+        setDeleteError(parseError(responseBody, "Unable to delete product"));
+        setDeleting(false);
+        return;
+      }
+
+      navigate("/products");
+    } catch {
+      setDeleteError("Unable to delete product");
+      setDeleting(false);
+    }
+  };
+
+  const handleVariantUpdated = (updatedVariant: Variant) => {
+    setProduct((current) => {
+      if (!current) return current;
+
+      return {
+        ...current,
+        variants: current.variants.map((variant) =>
+          variant.id === updatedVariant.id ? updatedVariant : variant
+        ),
+      };
+    });
   };
 
   if (!product) {
@@ -83,12 +131,16 @@ export default function ProductDetailPage() {
 
           <button
             onClick={handleDelete}
-            className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10"
+            disabled={deleting}
+            className="inline-flex items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-3 py-2 text-sm font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Trash2 className="h-4 w-4" />
-            Delete
+            {deleting ? "Deleting..." : "Delete"}
           </button>
         </div>
+        {deleteError && (
+          <p className="mt-4 text-sm text-destructive">{deleteError}</p>
+        )}
       </div>
 
       {/* Variants table — card wrapped like CatalogList */}
@@ -121,20 +173,38 @@ export default function ProductDetailPage() {
               </thead>
               <tbody className="[&_tr:last-child]:border-0">
                 {product.variants.map((v) => (
-                  <VariantRow key={v.id} variant={v} />
+                  <VariantRow
+                    key={v.id}
+                    variant={v}
+                    onEdit={setEditingVariant}
+                  />
                 ))}
               </tbody>
             </table>
           </div>
         </div>
       </section>
+
+      {editingVariant && (
+        <VariantEditModal
+          variant={editingVariant}
+          onClose={() => setEditingVariant(null)}
+          onVariantUpdated={handleVariantUpdated}
+        />
+      )}
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
 
-function VariantRow({ variant }: { variant: Variant }) {
+function VariantRow({
+  variant,
+  onEdit,
+}: {
+  variant: Variant;
+  onEdit: (variant: Variant) => void;
+}) {
   const lowStock =
     variant.inventory_count > 0 && variant.inventory_count <= 10;
   const outOfStock = variant.inventory_count === 0;
@@ -163,11 +233,9 @@ function VariantRow({ variant }: { variant: Variant }) {
       </td>
       <td className="p-4 text-right align-middle">
         <button
+          type="button"
           className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          onClick={() => {
-            // TODO: Open variant edit form / dialog
-            alert("Variant editing is not yet implemented.");
-          }}
+          onClick={() => onEdit(variant)}
         >
           <Pencil className="h-3 w-3" />
           Edit
